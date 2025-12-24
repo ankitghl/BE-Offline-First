@@ -10,6 +10,7 @@ import (
 	"Offline-First/internal/db"
 	httpapi "Offline-First/internal/http"
 	"Offline-First/internal/http/handler"
+	"Offline-First/internal/http/middleware"
 	"Offline-First/internal/repository/postgres"
 )
 
@@ -35,8 +36,11 @@ func main() {
 	// 5️⃣ Create router
 	router := httpapi.NewRouter(itemHandler)
 
+	// 🔐 wrap router with auth
+	securedRouter := middleware.Auth(router)
+
 	// 6️⃣ Add health endpoint
-	routerWithHealth := addHealth(router)
+	routerWithHealth := addHealth(securedRouter)
 
 	// 7️⃣ Start server
 	log.Println("api listening on :8081")

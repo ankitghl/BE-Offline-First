@@ -8,6 +8,7 @@ import (
 func NewRouter(itemHandler *handler.ItemHandler) http.Handler {
 	mux := http.NewServeMux()
 
+	// /items (create, list)
 	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
@@ -19,6 +20,7 @@ func NewRouter(itemHandler *handler.ItemHandler) http.Handler {
 		}
 	})
 
+	// /items/{id} (update, delete)
 	mux.HandleFunc("/items/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPut:
@@ -30,5 +32,15 @@ func NewRouter(itemHandler *handler.ItemHandler) http.Handler {
 
 		}
 	})
+
+	// /changes (sync API)
+	mux.HandleFunc("/changes", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		itemHandler.GetChanges(w, r)
+	})
+
 	return mux
 }
