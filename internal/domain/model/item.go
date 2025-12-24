@@ -4,7 +4,8 @@ import "time"
 
 type Item struct {
 	ID        string
-	OwnerId   string
+	UserID    string
+	Type      string
 	Title     string
 	Content   string
 	Version   int

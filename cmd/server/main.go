@@ -1,15 +1,70 @@
 package main
 
 import (
-	"Offline-First/internal/db"
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
+	"time"
+
+	"Offline-First/internal/db"
+	httpapi "Offline-First/internal/http"
+	"Offline-First/internal/http/handler"
+	"Offline-First/internal/repository/postgres"
 )
 
 func main() {
-	connectPostgres()
+	// 1️⃣ Read env
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		log.Fatal("DATABASE_URL is not set!")
+	}
 
+	// 2️⃣ Connect DB (keep it alive)
+	dbConn := connectPostgresWithRetry(dsn)
+	defer dbConn.Close()
+
+	log.Println("database connected")
+
+	// 3️⃣ Create repository
+	itemRepo := postgres.NewItemRepository(dbConn)
+
+	// 4️⃣ Create handlers
+	itemHandler := handler.NewItemHandler(itemRepo)
+
+	// 5️⃣ Create router
+	router := httpapi.NewRouter(itemHandler)
+
+	// 6️⃣ Add health endpoint
+	routerWithHealth := addHealth(router)
+
+	// 7️⃣ Start server
+	log.Println("api listening on :8081")
+	if err := http.ListenAndServe(":8081", routerWithHealth); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func connectPostgresWithRetry(dsn string) *sql.DB {
+	var dbConn *sql.DB
+	var err error
+
+	for i := 1; i <= 10; i++ {
+		dbConn, err = db.NewPostgres(dsn)
+		if err == nil {
+			log.Println("database connected")
+			return dbConn
+		}
+
+		log.Printf("waiting for database (%d/10): %v", i, err)
+		time.Sleep(2 * time.Second)
+	}
+
+	log.Fatal("could not connect to database after retries")
+	return nil
+}
+
+func addHealth(next http.Handler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -17,26 +72,6 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	log.Println("api listening on :8080")
-
-	if err := http.ListenAndServe(":8080", mux); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func connectPostgres() {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		log.Fatal("DATABASE_URL is not set!")
-	}
-
-	conn, err := db.NewPostgres(dsn)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	defer conn.Close()
-
-	log.Println("database connected")
-
+	mux.Handle("/", next)
+	return mux
 }

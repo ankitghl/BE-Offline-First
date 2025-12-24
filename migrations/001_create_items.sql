@@ -7,8 +7,8 @@ CREATE TABLE items (
     content     TEXT NOT NULL,
 
     version     INTEGER NOT NULL,
-    updated_at  TIMESTAMPTZ NOT NULL,
-    deleted_at  TIMESTAMPTZ,
+    deleted     BOOLEAN NOT NULL DEFAULT FALSE,
 
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at  TIMESTAMP NOT NULL,
+    created_at  TIMESTAMP NOT NULL DEFAULT now()
 );
