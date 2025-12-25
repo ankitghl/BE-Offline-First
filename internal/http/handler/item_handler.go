@@ -138,12 +138,23 @@ func (h *ItemHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, err := h.repo.Update(r.Context(), item)
-	if err == sql.ErrNoRows {
-		http.Error(w, "No items found!", http.StatusNotFound)
-		return
-	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		switch e := err.(type) {
+		case *domain.ConflictError:
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":       "version_conflict",
+				"server_item": e.ServerItem,
+			})
+			return
+
+		case error:
+			if err == domain.ErrNotFound {
+				http.Error(w, "not found!", http.StatusNotFound)
+				return
+			}
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 

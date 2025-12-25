@@ -50,34 +50,6 @@ func (r *ItemRepository) Create(ctx context.Context, item *domain.Item) (*domain
 	return created, nil
 }
 
-func (r *ItemRepository) GetById(ctx context.Context, id string) (*domain.Item, error) {
-	query := `
-		SELECT id, user_id, type, title, content, version, deleted, created_at, updated_at
-		FROM items
-		WHERE id = $1
-	`
-	row := r.db.QueryRowContext(ctx, query, id)
-
-	var item domain.Item
-	err := row.Scan(
-		&item.ID,
-		&item.UserID,
-		&item.Type,
-		&item.Title,
-		&item.Content,
-		&item.Version,
-		&item.Deleted,
-		&item.CreatedAt,
-		&item.UpdatedAt,
-	)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return &item, err
-}
-
 func (r *ItemRepository) ListByUser(ctx context.Context, userId string) ([]*domain.Item, error) {
 	query := `
 		SELECT id, user_id, type, title, content, version, deleted, created_at, updated_at
@@ -119,6 +91,33 @@ func (r *ItemRepository) ListByUser(ctx context.Context, userId string) ([]*doma
 	return items, nil
 }
 
+func (r *ItemRepository) GetById(ctx context.Context, userID string, id string) (*domain.Item, error) {
+	query := `
+		SELECT id, user_id, type, title, content, version, deleted, created_at, updated_at
+		FROM items
+		WHERE id = $1 AND user_id=$2
+	`
+	row := r.db.QueryRowContext(ctx, query, id, userID)
+
+	var item domain.Item
+	err := row.Scan(
+		&item.ID,
+		&item.UserID,
+		&item.Type,
+		&item.Title,
+		&item.Content,
+		&item.Version,
+		&item.Deleted,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, domain.ErrNotFound
+	}
+	return &item, err
+}
+
 func (r *ItemRepository) Update(ctx context.Context, item *domain.Item) (*domain.Item, error) {
 	query := `
 		UPDATE items
@@ -132,32 +131,32 @@ func (r *ItemRepository) Update(ctx context.Context, item *domain.Item) (*domain
 		AND user_id = $5
 		AND version = $6
 		AND deleted = false
-		RETURNING id, user_id, type, title, content, version, deleted, created_at, updated_at
 	`
-
-	updated := &domain.Item{}
-
-	err := r.db.QueryRowContext(ctx, query, item.Title, item.Content, item.Type, item.ID, item.UserID, item.Version).Scan(
-		&updated.ID,
-		&updated.UserID,
-		&updated.Type,
-		&updated.Title,
-		&updated.Content,
-		&updated.Version,
-		&updated.Deleted,
-		&updated.CreatedAt,
-		&updated.UpdatedAt,
+	res, err := r.db.ExecContext(ctx, query,
+		item.Title,
+		item.Content,
+		item.Type,
+		item.ID,
+		item.UserID,
+		item.Version,
 	)
-
-	if err == sql.ErrNoRows {
-		return nil, sql.ErrNoRows
-	}
 
 	if err != nil {
 		return nil, err
 	}
 
-	return updated, nil
+	rows, _ := res.RowsAffected()
+	if rows == 1 {
+		return r.GetById(ctx, item.UserID, item.ID)
+	}
+
+	// rows == 0 → explain why
+	current, err := r.GetById(ctx, item.UserID, item.ID)
+	if err != nil {
+		return nil, domain.ErrNotFound
+	}
+
+	return nil, domain.NewConflictError(current)
 }
 
 func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID string, version int) (*domain.Item, error) {
@@ -171,37 +170,24 @@ func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID strin
 		AND user_id = $2
 		AND version = $3		
 		AND deleted = false
-		RETURNING id, user_id, type, title, content, version, deleted, created_at, updated_at
 	`
-	deletedItem := &domain.Item{}
-
-	err := r.db.QueryRowContext(
-		ctx,
-		query,
-		id,
-		userID,
-		version,
-	).Scan(
-		&deletedItem.ID,
-		&deletedItem.UserID,
-		&deletedItem.Type,
-		&deletedItem.Title,
-		&deletedItem.Content,
-		&deletedItem.Version,
-		&deletedItem.Deleted,
-		&deletedItem.CreatedAt,
-		&deletedItem.UpdatedAt,
-	)
-
-	if err == sql.ErrNoRows {
-		return nil, sql.ErrNoRows
-	}
-
+	res, err := r.db.ExecContext(ctx, query, id, userID, version)
 	if err != nil {
 		return nil, err
 	}
 
-	return deletedItem, nil
+	rows, _ := res.RowsAffected()
+	if rows == 1 {
+		return r.GetById(ctx, userID, id)
+	}
+
+	// rows == 0 → explain
+	current, err := r.GetById(ctx, userID, id)
+	if err != nil {
+		return nil, domain.ErrNotFound
+	}
+
+	return nil, domain.NewConflictError(current)
 }
 
 func (r *ItemRepository) GetChanges(ctx context.Context, userID string, sinceVersion int) ([]*domain.Item, int, error) {
