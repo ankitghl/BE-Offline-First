@@ -42,7 +42,7 @@ type ItemResponse struct {
 
 type ChangeResponse struct {
 	LatestVersion int            `json:"latest_version"`
-	Items         []*domain.Item `json:"items"`
+	Items         []ItemResponse `json:"items"`
 }
 
 func (h *ItemHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -153,10 +153,21 @@ func (h *ItemHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch e := err.(type) {
 		case *domain.ConflictError:
+			conflictedItem := ItemResponse{
+				ID:        e.ServerItem.ID,
+				UserID:    e.ServerItem.UserID,
+				Type:      e.ServerItem.Type,
+				Title:     e.ServerItem.Title,
+				Content:   e.ServerItem.Content,
+				Version:   e.ServerItem.Version,
+				Deleted:   e.ServerItem.Deleted,
+				UpdatedAt: e.ServerItem.UpdatedAt.Format(time.RFC3339),
+			}
+
 			w.WriteHeader(http.StatusConflict)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"error":       "version_conflict",
-				"server_item": e.ServerItem,
+				"server_item": conflictedItem,
 			})
 			return
 
@@ -260,9 +271,24 @@ func (h *ItemHandler) GetChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	itemResponse := make([]ItemResponse, 0, len(items))
+
+	for _, item := range items {
+		itemResponse = append(itemResponse, ItemResponse{
+			ID:        item.ID,
+			UserID:    item.UserID,
+			Type:      item.Type,
+			Title:     item.Title,
+			Content:   item.Content,
+			Version:   item.Version,
+			Deleted:   item.Deleted,
+			UpdatedAt: item.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+
 	resp := ChangeResponse{
 		LatestVersion: latestVersion,
-		Items:         items,
+		Items:         itemResponse,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
