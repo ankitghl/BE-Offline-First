@@ -74,8 +74,20 @@ func (h *ItemHandler) Create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	resp := ItemResponse{
+		ID:        created.ID,
+		UserID:    created.UserID,
+		Type:      created.Type,
+		Title:     created.Title,
+		Content:   created.Content,
+		Version:   created.Version,
+		Deleted:   created.Deleted,
+		UpdatedAt: created.UpdatedAt.Format(time.RFC3339),
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(created)
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *ItemHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -158,8 +170,19 @@ func (h *ItemHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resp := ItemResponse{
+		ID:        updated.ID,
+		UserID:    updated.UserID,
+		Type:      updated.Type,
+		Title:     updated.Title,
+		Content:   updated.Content,
+		Version:   updated.Version,
+		Deleted:   updated.Deleted,
+		UpdatedAt: updated.UpdatedAt.Format(time.RFC3339),
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updated)
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *ItemHandler) Delete(w http.ResponseWriter, r *http.Request) {
@@ -197,8 +220,19 @@ func (h *ItemHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resp := ItemResponse{
+		ID:        deletedItem.ID,
+		UserID:    deletedItem.UserID,
+		Type:      deletedItem.Type,
+		Title:     deletedItem.Title,
+		Content:   deletedItem.Content,
+		Version:   deletedItem.Version,
+		Deleted:   deletedItem.Deleted,
+		UpdatedAt: deletedItem.UpdatedAt.Format(time.RFC3339),
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(deletedItem)
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *ItemHandler) GetChanges(w http.ResponseWriter, r *http.Request) {
