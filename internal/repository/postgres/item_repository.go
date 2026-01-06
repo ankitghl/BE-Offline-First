@@ -4,6 +4,7 @@ import (
 	domain "Offline-First/internal/domain/model"
 	"context"
 	"database/sql"
+	"log"
 )
 
 type ItemRepository struct {
@@ -14,16 +15,41 @@ func NewItemRepository(db *sql.DB) *ItemRepository {
 	return &ItemRepository{db: db}
 }
 
+func (r *ItemRepository) NextVersion(ctx context.Context, tx *sql.Tx) (int, error) {
+	var v int
+	err := tx.QueryRowContext(ctx, `
+		UPDATE sync_state
+		SET latest_version = latest_version + 1
+		WHERE id = 1
+		RETURNING latest_version
+	`).Scan(&v)
+
+	return v, err
+}
+
 func (r *ItemRepository) Create(ctx context.Context, item *domain.Item) (*domain.Item, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	version, err := r.NextVersion(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("[Server] Global version allocated: %d (CREATE)", version)
+
 	query := `
 		INSERT INTO items (
 			id, user_id, type, title, content, version, deleted, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, 1, false, now(), now())
+		) VALUES ($1, $2, $3, $4, $5, $6, false, now(), now())
 		RETURNING id, user_id, type, title, content, version, deleted, created_at, updated_at
 	`
 	created := &domain.Item{}
 
-	err := r.db.QueryRowContext(
+	err = tx.QueryRowContext(
 		ctx,
 		query,
 		item.ID,
@@ -31,6 +57,7 @@ func (r *ItemRepository) Create(ctx context.Context, item *domain.Item) (*domain
 		item.Type,
 		item.Title,
 		item.Content,
+		version,
 	).Scan(
 		&created.ID,
 		&created.UserID,
@@ -47,7 +74,7 @@ func (r *ItemRepository) Create(ctx context.Context, item *domain.Item) (*domain
 		return nil, err
 	}
 
-	return created, nil
+	return created, tx.Commit()
 }
 
 func (r *ItemRepository) ListByUser(ctx context.Context, userId string) ([]*domain.Item, error) {
@@ -119,75 +146,103 @@ func (r *ItemRepository) GetById(ctx context.Context, userID string, id string) 
 }
 
 func (r *ItemRepository) Update(ctx context.Context, item *domain.Item) (*domain.Item, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	current, err := r.GetById(ctx, item.UserID, item.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if current.Version != item.Version {
+		return nil, domain.NewConflictError(current)
+	}
+
+	version, err := r.NextVersion(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("[Server] Global version allocated: %d (UPDATE)", version)
+
 	query := `
 		UPDATE items
 		SET 
 			title = $1,
 			content = $2,
 			type = $3,
-			version = version + 1,
+			version = $4,
 			updated_at = now()
-		WHERE id = $4 
-		AND user_id = $5
-		AND version = $6
-		AND deleted = false
+		WHERE id = $5 
+		AND user_id = $6
 	`
-	res, err := r.db.ExecContext(ctx, query,
+	_, err = r.db.ExecContext(ctx, query,
 		item.Title,
 		item.Content,
 		item.Type,
+		version,
 		item.ID,
 		item.UserID,
-		item.Version,
 	)
 
 	if err != nil {
 		return nil, err
 	}
 
-	rows, _ := res.RowsAffected()
-	if rows == 1 {
-		return r.GetById(ctx, item.UserID, item.ID)
-	}
-
-	// rows == 0 → explain why
-	current, err := r.GetById(ctx, item.UserID, item.ID)
-	if err != nil {
-		return nil, domain.ErrNotFound
-	}
-
-	return nil, domain.NewConflictError(current)
-}
-
-func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID string, version int) (*domain.Item, error) {
-	query := `
-		UPDATE items
-		SET
-			deleted = true,
-			version = version + 1,
-			updated_at = now()
-		WHERE id = $1 
-		AND user_id = $2
-		AND version = $3		
-		AND deleted = false
-	`
-	res, err := r.db.ExecContext(ctx, query, id, userID, version)
+	updated, err := r.GetById(ctx, item.UserID, item.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	rows, _ := res.RowsAffected()
-	if rows == 1 {
-		return r.GetById(ctx, userID, id)
-	}
+	return updated, tx.Commit()
+}
 
-	// rows == 0 → explain
+func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID string, version int) (*domain.Item, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
 	current, err := r.GetById(ctx, userID, id)
 	if err != nil {
-		return nil, domain.ErrNotFound
+		return nil, err
 	}
 
-	return nil, domain.NewConflictError(current)
+	if current.Version != version {
+		return nil, domain.NewConflictError(current)
+	}
+
+	newVersion, err := r.NextVersion(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("[Server] Global version allocated: %d (DELETE)", newVersion)
+
+	query := `
+		UPDATE items
+		SET
+			deleted = true,
+			version = $1,
+			updated_at = now()
+		WHERE id = $2 AND user_id = $3
+	`
+
+	_, err = tx.ExecContext(ctx, query, newVersion, id, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	deletedItem, err := r.GetById(ctx, userID, id)
+	if err != nil {
+		return nil, err
+	}
+
+	return deletedItem, tx.Commit()
 }
 
 func (r *ItemRepository) GetChanges(ctx context.Context, userID string, sinceVersion int) ([]*domain.Item, int, error) {

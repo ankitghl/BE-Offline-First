@@ -132,6 +132,7 @@ func (h *ItemHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/items/")
 	if id == "" {
 		http.Error(w, "id required!", http.StatusBadRequest)
+		return
 	}
 
 	var req CreateItemRequest
