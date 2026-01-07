@@ -118,7 +118,8 @@ func (r *ItemRepository) ListByUser(ctx context.Context, userId string) ([]*doma
 	return items, nil
 }
 
-func (r *ItemRepository) GetById(ctx context.Context, userID string, id string) (*domain.Item, error) {
+func (r *ItemRepository) GetByIdTx(ctx context.Context, tx *sql.Tx,
+	userID string, id string) (*domain.Item, error) {
 	query := `
 		SELECT id, user_id, type, title, content, version, deleted, created_at, updated_at
 		FROM items
@@ -152,7 +153,7 @@ func (r *ItemRepository) Update(ctx context.Context, item *domain.Item) (*domain
 	}
 	defer tx.Rollback()
 
-	current, err := r.GetById(ctx, item.UserID, item.ID)
+	current, err := r.GetByIdTx(ctx, tx, item.UserID, item.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -175,6 +176,7 @@ func (r *ItemRepository) Update(ctx context.Context, item *domain.Item) (*domain
 			content = $2,
 			type = $3,
 			version = $4,
+			deleted = false,
 			updated_at = now()
 		WHERE id = $5 
 		AND user_id = $6
@@ -192,12 +194,16 @@ func (r *ItemRepository) Update(ctx context.Context, item *domain.Item) (*domain
 		return nil, err
 	}
 
-	updated, err := r.GetById(ctx, item.UserID, item.ID)
+	updated, err := r.GetByIdTx(ctx, tx, item.UserID, item.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	return updated, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return updated, nil
 }
 
 func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID string, version int) (*domain.Item, error) {
@@ -207,7 +213,7 @@ func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID strin
 	}
 	defer tx.Rollback()
 
-	current, err := r.GetById(ctx, userID, id)
+	current, err := r.GetByIdTx(ctx, tx, userID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +243,7 @@ func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID strin
 		return nil, err
 	}
 
-	deletedItem, err := r.GetById(ctx, userID, id)
+	deletedItem, err := r.GetByIdTx(ctx, tx, userID, id)
 	if err != nil {
 		return nil, err
 	}
