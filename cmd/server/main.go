@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"Offline-First/internal/db"
@@ -12,6 +13,10 @@ import (
 	"Offline-First/internal/http/handler"
 	"Offline-First/internal/http/middleware"
 	"Offline-First/internal/repository/postgres"
+
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 )
 
 func main() {
@@ -20,6 +25,31 @@ func main() {
 	if dsn == "" {
 		log.Fatal("DATABASE_URL is not set!")
 	}
+
+	// 1️⃣.1️⃣ Get working directory
+	wd, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// 1️⃣.2️⃣ create migrationpath where migrations are saved and start migrate
+	migrationsPath := filepath.Join(wd, "migrations")
+	sourceURL := "file://" + migrationsPath
+	log.Printf("sourceURL: %s", sourceURL)
+
+	m, err := migrate.New(
+		sourceURL,
+		dsn,
+	)
+	if err != nil {
+		log.Fatalf("failed to create migrator: %v", err)
+	}
+
+	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		log.Fatalf("migration failed: %v", err)
+	}
+
+	log.Println("migrations applied successfully")
 
 	// 2️⃣ Connect DB (keep it alive)
 	dbConn := connectPostgresWithRetry(dsn)
