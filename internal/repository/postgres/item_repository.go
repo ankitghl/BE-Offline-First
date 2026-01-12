@@ -2,9 +2,9 @@ package postgres
 
 import (
 	domain "Offline-First/internal/domain/model"
+	"Offline-First/internal/http/middleware"
 	"context"
 	"database/sql"
-	"log"
 )
 
 type ItemRepository struct {
@@ -38,6 +38,13 @@ func (r *ItemRepository) Create(ctx context.Context, item *domain.Item, mutation
 	if appliedVersion, ok, err := r.getAppliedVersion(ctx, tx, mutationID); err != nil {
 		return nil, err
 	} else if ok {
+		middleware.LogWithContext(
+			ctx,
+			"mutation replayed (create)",
+			"item_id", item.ID,
+			"applied_version", appliedVersion,
+		)
+
 		// Mutation already applied → return existing item
 		existing, err := r.GetByIdTx(ctx, tx, item.UserID, item.ID)
 		if err != nil {
@@ -62,7 +69,12 @@ func (r *ItemRepository) Create(ctx context.Context, item *domain.Item, mutation
 		return nil, err
 	}
 
-	log.Printf("[Server] Global version allocated: %d (CREATE)", version)
+	middleware.LogWithContext(
+		ctx,
+		"global version allocated (create)",
+		"item_id", item.ID,
+		"new_version", version,
+	)
 
 	query := `
 		INSERT INTO items (
@@ -193,6 +205,12 @@ func (r *ItemRepository) Update(ctx context.Context, item *domain.Item, mutation
 		return nil, err
 	} else if ok {
 		// Already applied → return current item state
+		middleware.LogWithContext(ctx,
+			"mutation replayed (update)",
+			"item_id", item.ID,
+			"applied_version", appliedVersion,
+		)
+
 		current, err := r.GetByIdTx(ctx, tx, item.UserID, item.ID)
 		if err != nil {
 			return nil, err
@@ -208,6 +226,14 @@ func (r *ItemRepository) Update(ctx context.Context, item *domain.Item, mutation
 	}
 
 	if current.Version != item.Version {
+		middleware.LogWithContext(
+			ctx,
+			"version conflict (update)",
+			"item_id", item.ID,
+			"client_version", item.Version,
+			"server_version", current.Version,
+		)
+
 		return nil, domain.NewConflictError(current)
 	}
 
@@ -217,7 +243,12 @@ func (r *ItemRepository) Update(ctx context.Context, item *domain.Item, mutation
 		return nil, err
 	}
 
-	log.Printf("[Server] Global version allocated: %d (UPDATE)", newVersion)
+	middleware.LogWithContext(
+		ctx,
+		"global version allocated (update)",
+		"item_id", item.ID,
+		"new_version", newVersion,
+	)
 
 	query := `
 		UPDATE items
@@ -287,6 +318,13 @@ func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID strin
 	if appliedVersion, ok, err := r.getAppliedVersion(ctx, tx, mutationID); err != nil {
 		return nil, err
 	} else if ok {
+		middleware.LogWithContext(
+			ctx,
+			"mutation replayed (delete)",
+			"item_id", id,
+			"applied_version", appliedVersion,
+		)
+
 		current, err := r.GetByIdTx(ctx, tx, userID, id)
 		if err != nil {
 			return nil, err
@@ -302,6 +340,14 @@ func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID strin
 	}
 
 	if current.Version != version {
+		middleware.LogWithContext(
+			ctx,
+			"version conflict (delete)",
+			"item_id", id,
+			"client_version", version,
+			"server_version", current.Version,
+		)
+
 		return nil, domain.NewConflictError(current)
 	}
 
@@ -311,7 +357,12 @@ func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID strin
 		return nil, err
 	}
 
-	log.Printf("[Server] Global version allocated: %d (DELETE)", newVersion)
+	middleware.LogWithContext(
+		ctx,
+		"global version allocated (delete)",
+		"item_id", id,
+		"new_version", newVersion,
+	)
 
 	// 4️⃣ Apply soft delete
 	query := `

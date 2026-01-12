@@ -64,6 +64,12 @@ func (h *ItemHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	middleware.LogWithContext(
+		r.Context(),
+		"handling create request",
+		"item_id", req.ID,
+	)
+
 	item := &domain.Item{
 		ID:      req.ID,
 		UserID:  userID,
@@ -144,6 +150,13 @@ func (h *ItemHandler) Update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+
+	middleware.LogWithContext(
+		r.Context(),
+		"handling update request",
+		"item_id", id,
+		"base_version", req.Version,
+	)
 
 	item := &domain.Item{
 		ID:      id,
@@ -230,6 +243,13 @@ func (h *ItemHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid version", http.StatusBadRequest)
 		return
 	}
+
+	middleware.LogWithContext(
+		r.Context(),
+		"handling delete request",
+		"item_id", id,
+		"base_version", version,
+	)
 
 	deletedItem, err := h.repo.SoftDelete(r.Context(), id, userID, version, mutationID)
 	if err != nil {
