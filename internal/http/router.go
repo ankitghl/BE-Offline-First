@@ -2,6 +2,7 @@ package http
 
 import (
 	"Offline-First/internal/http/handler"
+	"Offline-First/internal/http/middleware"
 	"net/http"
 )
 
@@ -12,7 +13,7 @@ func NewRouter(itemHandler *handler.ItemHandler) http.Handler {
 	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
-			itemHandler.Create(w, r)
+			middleware.MutationMiddleware(http.HandlerFunc(itemHandler.Create)).ServeHTTP(w, r)
 		case http.MethodGet:
 			itemHandler.List(w, r)
 		default:
@@ -24,9 +25,9 @@ func NewRouter(itemHandler *handler.ItemHandler) http.Handler {
 	mux.HandleFunc("/items/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPut:
-			itemHandler.Update(w, r)
+			middleware.MutationMiddleware(http.HandlerFunc(itemHandler.Update)).ServeHTTP(w, r)
 		case http.MethodDelete:
-			itemHandler.Delete(w, r)
+			middleware.MutationMiddleware(http.HandlerFunc(itemHandler.Delete)).ServeHTTP(w, r)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 

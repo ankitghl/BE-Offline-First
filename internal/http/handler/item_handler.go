@@ -4,7 +4,6 @@ import (
 	domain "Offline-First/internal/domain/model"
 	"Offline-First/internal/http/middleware"
 	"Offline-First/internal/repository"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -53,6 +52,12 @@ func (h *ItemHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	}
 
+	mutationID, ok := middleware.MutationIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "missing mutation id", http.StatusBadRequest)
+		return
+	}
+
 	var req CreateItemRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json!", http.StatusBadRequest)
@@ -69,25 +74,18 @@ func (h *ItemHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Deleted: false,
 	}
 
-	created, err := h.repo.Create(r.Context(), item)
+	created, err := h.repo.Create(r.Context(), item, mutationID)
 	if err != nil {
+		if err == domain.ErrAlreadyExists {
+			http.Error(w, "item already exists", http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	resp := ItemResponse{
-		ID:        created.ID,
-		UserID:    created.UserID,
-		Type:      created.Type,
-		Title:     created.Title,
-		Content:   created.Content,
-		Version:   created.Version,
-		Deleted:   created.Deleted,
-		UpdatedAt: created.UpdatedAt.Format(time.RFC3339),
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(toItemResponse(created))
 }
 
 func (h *ItemHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +127,12 @@ func (h *ItemHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mutationID, ok := middleware.MutationIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "missing mutation id", http.StatusBadRequest)
+		return
+	}
+
 	id := strings.TrimPrefix(r.URL.Path, "/items/")
 	if id == "" {
 		http.Error(w, "id required!", http.StatusBadRequest)
@@ -150,7 +154,7 @@ func (h *ItemHandler) Update(w http.ResponseWriter, r *http.Request) {
 		Version: req.Version,
 	}
 
-	updated, err := h.repo.Update(r.Context(), item)
+	updated, err := h.repo.Update(r.Context(), item, mutationID)
 	if err != nil {
 		switch e := err.(type) {
 		case *domain.ConflictError:
@@ -204,6 +208,11 @@ func (h *ItemHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mutationID, ok := middleware.MutationIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "missing mutation id", http.StatusBadRequest)
+	}
+
 	id := strings.TrimPrefix(r.URL.Path, "/items/")
 	if id == "" {
 		http.Error(w, "id required", http.StatusBadRequest)
@@ -222,29 +231,30 @@ func (h *ItemHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deletedItem, err := h.repo.SoftDelete(r.Context(), id, userID, version)
-	if err == sql.ErrNoRows {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
+	deletedItem, err := h.repo.SoftDelete(r.Context(), id, userID, version, mutationID)
 	if err != nil {
+		switch e := err.(type) {
+		case *domain.ConflictError:
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":       "version_conflict",
+				"server_item": toItemResponse(e.ServerItem),
+			})
+			return
+
+		case error:
+			if err == domain.ErrNotFound {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+
+			}
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	resp := ItemResponse{
-		ID:        deletedItem.ID,
-		UserID:    deletedItem.UserID,
-		Type:      deletedItem.Type,
-		Title:     deletedItem.Title,
-		Content:   deletedItem.Content,
-		Version:   deletedItem.Version,
-		Deleted:   deletedItem.Deleted,
-		UpdatedAt: deletedItem.UpdatedAt.Format(time.RFC3339),
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(toItemResponse(deletedItem))
 }
 
 func (h *ItemHandler) GetChanges(w http.ResponseWriter, r *http.Request) {
@@ -294,4 +304,18 @@ func (h *ItemHandler) GetChanges(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func toItemResponse(item *domain.Item) ItemResponse {
+	return ItemResponse{
+		ID:        item.ID,
+		UserID:    item.UserID,
+		Type:      item.Type,
+		Title:     item.Title,
+		Content:   item.Content,
+		Version:   item.Version,
+		Deleted:   item.Deleted,
+		UpdatedAt: item.UpdatedAt.Format(time.RFC3339),
+	}
+
 }

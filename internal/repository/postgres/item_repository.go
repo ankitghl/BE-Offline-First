@@ -27,13 +27,36 @@ func (r *ItemRepository) NextVersion(ctx context.Context, tx *sql.Tx) (int, erro
 	return v, err
 }
 
-func (r *ItemRepository) Create(ctx context.Context, item *domain.Item) (*domain.Item, error) {
+func (r *ItemRepository) Create(ctx context.Context, item *domain.Item, mutationID string) (*domain.Item, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
+	// 1️⃣ Idempotency check
+	if appliedVersion, ok, err := r.getAppliedVersion(ctx, tx, mutationID); err != nil {
+		return nil, err
+	} else if ok {
+		// Mutation already applied → return existing item
+		existing, err := r.GetByIdTx(ctx, tx, item.UserID, item.ID)
+		if err != nil {
+			return nil, err
+		}
+		existing.Version = appliedVersion
+		return existing, nil
+	}
+
+	// 2️⃣ Ensure item does not already exist (defensive)
+	_, err = r.GetByIdTx(ctx, tx, item.UserID, item.ID)
+	if err == nil {
+		return nil, domain.ErrAlreadyExists
+	}
+	if err != domain.ErrNotFound {
+		return nil, err
+	}
+
+	// 3️⃣ Allocate global version
 	version, err := r.NextVersion(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -45,11 +68,8 @@ func (r *ItemRepository) Create(ctx context.Context, item *domain.Item) (*domain
 		INSERT INTO items (
 			id, user_id, type, title, content, version, deleted, created_at, updated_at
 		) VALUES ($1, $2, $3, $4, $5, $6, false, now(), now())
-		RETURNING id, user_id, type, title, content, version, deleted, created_at, updated_at
 	`
-	created := &domain.Item{}
-
-	err = tx.QueryRowContext(
+	_, err = tx.ExecContext(
 		ctx,
 		query,
 		item.ID,
@@ -58,18 +78,33 @@ func (r *ItemRepository) Create(ctx context.Context, item *domain.Item) (*domain
 		item.Title,
 		item.Content,
 		version,
-	).Scan(
-		&created.ID,
-		&created.UserID,
-		&created.Type,
-		&created.Title,
-		&created.Content,
-		&created.Version,
-		&created.Deleted,
-		&created.CreatedAt,
-		&created.UpdatedAt,
 	)
 
+	if err != nil {
+		return nil, err
+	}
+
+	// 5️⃣ Record mutation
+	_, err = tx.ExecContext(
+		ctx,
+		`
+		INSERT INTO mutation_log (
+			mutation_id,
+			item_id,
+			mutation_type,
+			applied_version
+		)
+		VALUES ($1, $2, 'create', $3)
+		`,
+		mutationID,
+		item.ID,
+		version,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	created, err := r.GetByIdTx(ctx, tx, item.UserID, item.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +160,7 @@ func (r *ItemRepository) GetByIdTx(ctx context.Context, tx *sql.Tx,
 		FROM items
 		WHERE id = $1 AND user_id=$2
 	`
-	row := r.db.QueryRowContext(ctx, query, id, userID)
+	row := tx.QueryRowContext(ctx, query, id, userID)
 
 	var item domain.Item
 	err := row.Scan(
@@ -146,13 +181,27 @@ func (r *ItemRepository) GetByIdTx(ctx context.Context, tx *sql.Tx,
 	return &item, err
 }
 
-func (r *ItemRepository) Update(ctx context.Context, item *domain.Item) (*domain.Item, error) {
+func (r *ItemRepository) Update(ctx context.Context, item *domain.Item, mutationID string) (*domain.Item, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
+	// 1️⃣ Idempotency check
+	if appliedVersion, ok, err := r.getAppliedVersion(ctx, tx, mutationID); err != nil {
+		return nil, err
+	} else if ok {
+		// Already applied → return current item state
+		current, err := r.GetByIdTx(ctx, tx, item.UserID, item.ID)
+		if err != nil {
+			return nil, err
+		}
+		current.Version = appliedVersion
+		return current, nil
+	}
+
+	// 2️⃣ Load current state
 	current, err := r.GetByIdTx(ctx, tx, item.UserID, item.ID)
 	if err != nil {
 		return nil, err
@@ -162,12 +211,13 @@ func (r *ItemRepository) Update(ctx context.Context, item *domain.Item) (*domain
 		return nil, domain.NewConflictError(current)
 	}
 
-	version, err := r.NextVersion(ctx, tx)
+	// 3️⃣ Allocate global version
+	newVersion, err := r.NextVersion(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
 
-	log.Printf("[Server] Global version allocated: %d (UPDATE)", version)
+	log.Printf("[Server] Global version allocated: %d (UPDATE)", newVersion)
 
 	query := `
 		UPDATE items
@@ -185,11 +235,31 @@ func (r *ItemRepository) Update(ctx context.Context, item *domain.Item) (*domain
 		item.Title,
 		item.Content,
 		item.Type,
-		version,
+		newVersion,
 		item.ID,
 		item.UserID,
 	)
 
+	if err != nil {
+		return nil, err
+	}
+
+	// 5️⃣ Record mutation
+	_, err = tx.ExecContext(
+		ctx,
+		`
+		INSERT INTO mutation_log (
+			mutation_id,
+			item_id,
+			mutation_type,
+			applied_version
+		)
+		VALUES ($1, $2, 'update', $3)
+		`,
+		mutationID,
+		item.ID,
+		newVersion,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -206,13 +276,26 @@ func (r *ItemRepository) Update(ctx context.Context, item *domain.Item) (*domain
 	return updated, nil
 }
 
-func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID string, version int) (*domain.Item, error) {
+func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID string, version int, mutationID string) (*domain.Item, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
+	// 1️⃣ Idempotency check
+	if appliedVersion, ok, err := r.getAppliedVersion(ctx, tx, mutationID); err != nil {
+		return nil, err
+	} else if ok {
+		current, err := r.GetByIdTx(ctx, tx, userID, id)
+		if err != nil {
+			return nil, err
+		}
+		current.Version = appliedVersion
+		return current, nil
+	}
+
+	// 2️⃣ Load current state
 	current, err := r.GetByIdTx(ctx, tx, userID, id)
 	if err != nil {
 		return nil, err
@@ -222,6 +305,7 @@ func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID strin
 		return nil, domain.NewConflictError(current)
 	}
 
+	// 3️⃣ Allocate global version
 	newVersion, err := r.NextVersion(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -229,6 +313,7 @@ func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID strin
 
 	log.Printf("[Server] Global version allocated: %d (DELETE)", newVersion)
 
+	// 4️⃣ Apply soft delete
 	query := `
 		UPDATE items
 		SET
@@ -239,6 +324,26 @@ func (r *ItemRepository) SoftDelete(ctx context.Context, id string, userID strin
 	`
 
 	_, err = tx.ExecContext(ctx, query, newVersion, id, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5️⃣ Record mutation
+	_, err = tx.ExecContext(
+		ctx,
+		`
+		INSERT INTO mutation_log (
+			mutation_id,
+			item_id,
+			mutation_type,
+			applied_version
+		)
+		VALUES ($1, $2, 'delete', $3)
+		`,
+		mutationID,
+		id,
+		newVersion,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -294,4 +399,24 @@ func (r *ItemRepository) GetChanges(ctx context.Context, userID string, sinceVer
 		items = append(items, item)
 	}
 	return items, latestVersion, nil
+}
+
+func (r *ItemRepository) getAppliedVersion(ctx context.Context, tx *sql.Tx, mutationID string) (int, bool, error) {
+	var v int
+	err := tx.QueryRowContext(
+		ctx,
+		`SELECT applied_version 
+		FROM mutation_log 
+		WHERE mutation_id = $1`,
+		mutationID,
+	).Scan(&v)
+
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return v, true, nil
+
 }
