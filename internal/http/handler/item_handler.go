@@ -82,8 +82,12 @@ func (h *ItemHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.repo.Create(r.Context(), item, mutationID)
 	if err != nil {
-		if err == domain.ErrAlreadyExists {
-			http.Error(w, "item already exists", http.StatusConflict)
+		if me, ok := err.(domain.MutationError); ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":     err.Error(),
+				"retryable": me.IsRetryable(),
+			})
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -169,49 +173,32 @@ func (h *ItemHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := h.repo.Update(r.Context(), item, mutationID)
 	if err != nil {
-		switch e := err.(type) {
-		case *domain.ConflictError:
-			conflictedItem := ItemResponse{
-				ID:        e.ServerItem.ID,
-				UserID:    e.ServerItem.UserID,
-				Type:      e.ServerItem.Type,
-				Title:     e.ServerItem.Title,
-				Content:   e.ServerItem.Content,
-				Version:   e.ServerItem.Version,
-				Deleted:   e.ServerItem.Deleted,
-				UpdatedAt: e.ServerItem.UpdatedAt.Format(time.RFC3339),
-			}
+		if me, ok := err.(domain.MutationError); ok {
+			if me.IsConflict() {
+				ce := err.(*domain.ConflictError)
 
-			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"error":       "version_conflict",
-				"server_item": conflictedItem,
-			})
-			return
-
-		case error:
-			if err == domain.ErrNotFound {
-				http.Error(w, "not found!", http.StatusNotFound)
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error":       "version_conflict",
+					"retryable":   false,
+					"server_item": toItemResponse(ce.ServerItem),
+				})
 				return
 			}
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":     "mutation_failed",
+				"retryable": me.IsRetryable(),
+			})
+			return
 		}
-		http.Error(w, "internal error", http.StatusInternalServerError)
+
+		http.Error(w, "internal Error", http.StatusInternalServerError)
 		return
 	}
 
-	resp := ItemResponse{
-		ID:        updated.ID,
-		UserID:    updated.UserID,
-		Type:      updated.Type,
-		Title:     updated.Title,
-		Content:   updated.Content,
-		Version:   updated.Version,
-		Deleted:   updated.Deleted,
-		UpdatedAt: updated.UpdatedAt.Format(time.RFC3339),
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(toItemResponse(updated))
 }
 
 func (h *ItemHandler) Delete(w http.ResponseWriter, r *http.Request) {
@@ -253,23 +240,28 @@ func (h *ItemHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	deletedItem, err := h.repo.SoftDelete(r.Context(), id, userID, version, mutationID)
 	if err != nil {
-		switch e := err.(type) {
-		case *domain.ConflictError:
-			w.WriteHeader(http.StatusConflict)
+		if me, ok := err.(domain.MutationError); ok {
+			if me.IsConflict() {
+				ce := err.(*domain.ConflictError)
+
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error":       "version_conflict",
+					"retryable":   false,
+					"server_item": toItemResponse(ce.ServerItem),
+				})
+				return
+			}
+
+			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"error":       "version_conflict",
-				"server_item": toItemResponse(e.ServerItem),
+				"error":     "mutation_failed",
+				"retryable": me.IsRetryable(),
 			})
 			return
-
-		case error:
-			if err == domain.ErrNotFound {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-
-			}
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 

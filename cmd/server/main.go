@@ -26,53 +26,31 @@ func main() {
 		log.Fatal("DATABASE_URL is not set!")
 	}
 
-	// 1️⃣.1️⃣ Get working directory
-	wd, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("failed to get working directory: %v", err)
-	}
-
-	// 1️⃣.2️⃣ create migrationpath where migrations are saved and start migrate
-	migrationsPath := filepath.Join(wd, "migrations")
-	sourceURL := "file://" + migrationsPath
-	log.Printf("sourceURL: %s", sourceURL)
-
-	m, err := migrate.New(
-		sourceURL,
-		dsn,
-	)
-	if err != nil {
-		log.Fatalf("failed to create migrator: %v", err)
-	}
-
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		log.Fatalf("migration failed: %v", err)
-	}
-
-	log.Println("migrations applied successfully")
-
 	// 2️⃣ Connect DB (keep it alive)
 	dbConn := connectPostgresWithRetry(dsn)
 	defer dbConn.Close()
 
 	log.Println("database connected")
 
-	// 3️⃣ Create repository
+	// 3️⃣ Run migrations
+	runMigrations(dsn)
+
+	// 4️⃣  Create repository
 	itemRepo := postgres.NewItemRepository(dbConn)
 
-	// 4️⃣ Create handlers
+	// 5️⃣ Create handlers
 	itemHandler := handler.NewItemHandler(itemRepo)
 
-	// 5️⃣ Create router
+	// 6️⃣  Create router
 	router := httpapi.NewRouter(itemHandler)
 
 	// 🔐 wrap router with auth
 	securedRouter := middleware.Auth(router)
 
-	// 6️⃣ Add health endpoint
+	// 7️⃣ Add health endpoint
 	routerWithHealth := addHealth(securedRouter)
 
-	// 7️⃣ Start server
+	// 8️⃣ Start server
 	log.Println("api listening on :8081")
 	if err := http.ListenAndServe(":8081", routerWithHealth); err != nil {
 		log.Fatal(err)
@@ -96,6 +74,31 @@ func connectPostgresWithRetry(dsn string) *sql.DB {
 
 	log.Fatal("could not connect to database after retries")
 	return nil
+}
+
+func runMigrations(dsn string) {
+	// 1️⃣ Get working directory
+	wd, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("failed to get working directory: %v", err)
+	}
+
+	// 2️⃣ create migrationpath where migrations are saved and start migrate
+	migrationsPath := filepath.Join(wd, "migrations")
+	sourceURL := "file://" + migrationsPath
+	log.Printf("sourceURL: %s", sourceURL)
+
+	m, err := migrate.New(sourceURL, dsn)
+	if err != nil {
+		log.Fatalf("failed to create migrator: %v", err)
+	}
+
+	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		log.Fatalf("migration failed: %v", err)
+	}
+
+	log.Println("migrations applied successfully")
+
 }
 
 func addHealth(next http.Handler) http.Handler {
